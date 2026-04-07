@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "h1-filename-sync",
+	"name": "H1 Filename Sync",
 	"version": "1.0.0",
-	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"minAppVersion": "1.5.0",
+	"description": "Rename files based on their first H1.",
+	"author": "rascar-capac",
+	"authorUrl": "",
 	"isDesktopOnly": false
 }

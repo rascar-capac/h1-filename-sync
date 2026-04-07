@@ -1,99 +1,167 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import {
+    Plugin,
+    TFile,
+    debounce,
+    Notice
+} from "obsidian";
+import {DEFAULT_SETTINGS, PluginSettings, H1SettingTab} from "./settings";
 
-// Remember to rename these classes and interfaces!
+export default class H1FilenameSync extends Plugin {
+    public settings!: PluginSettings;
+    private debouncedRename!: (file: TFile) => void;
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+    async onload() {
+        await this.loadSettings();
 
-	async onload() {
-		await this.loadSettings();
+        this.addSettingTab(new H1SettingTab(this.app, this));
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+        this.createDebounce();
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+        // 🔁 Sur modification (reset du timer à chaque modif)
+        this.registerEvent(
+            this.app.vault.on("modify", (file) => {
+                if (!(file instanceof TFile)) return;
+                if (file.extension !== "md") return;
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+                if (this.isIgnored(file)) return;
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
+                this.debouncedRename(file);
+            })
+        );
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+        // 📂 À l’ouverture du fichier
+        this.registerEvent(
+            this.app.workspace.on("file-open", (file) => {
+                if (!(file instanceof TFile)) return;
+                if (file.extension !== "md") return;
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
+                if (this.isIgnored(file)) return;
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+                this.debouncedRename(file);
+            })
+        );
+    }
 
-	}
+    createDebounce() {
+        this.debouncedRename = debounce(
+            (file: TFile) => this.renameFromH1(file, false),
+            this.settings.delay,
+            true // reset à chaque appel
+        );
+    }
 
-	onunload() {
-	}
+    isIgnored(file: TFile): boolean {
+        const folders = this.settings.ignoredFolders
+            .split(",")
+            .map(f => f.trim())
+            .filter(Boolean);
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
+        return folders.some(folder => file.path.startsWith(folder + "/"));
+    }
 
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
+    buildRegex(): RegExp {
+        const chars = this.settings.invalidChars
+            .split(",")
+            .map(c => c.trim())
+            .filter(Boolean)
+            .map(c => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")); // escape regex
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+        return new RegExp(`[${chars.join("")}]`, "g");
+    }
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+    async renameFromH1(file: TFile, verbose: boolean) {
+        const content = await this.app.vault.read(file);
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
+        const match = content.match(/^#\s+(.+)$/m);
+
+        if (!match) {
+            if (verbose) {
+                const message = `${this.manifest.name} : No h1 found in ${file}.`;
+                new Notice(message);
+                console.log(message);
+            }
+
+            return;
+        }
+
+        const rawTitle = match[1] || "";
+
+        // 🧹 Nettoyage caractères
+        const regex = this.buildRegex();
+        let cleanTitle = rawTitle.replace(regex, " ");
+
+        // 🔤 Normalisation espaces
+        cleanTitle = cleanTitle.replace(/\s+/g, " ").trim();
+
+        // 🔁 Substitution des espaces
+        this.settings.spaceSubstitute = this.settings.spaceSubstitute || " ";
+        cleanTitle = cleanTitle.replace(/ /g, this.settings.spaceSubstitute);
+
+        if (!cleanTitle) {
+            if (verbose) {
+                const message = `${this.manifest.name} : Something went wrong with the h1 found in ${file}: ${rawTitle}.`;
+                new Notice(message);
+                console.log(message);
+            }
+
+            return;
+        }
+
+        let counter = 0;
+        let incrementedTitle = cleanTitle;
+        let newPath = file.parent && file.parent.path !== '/' ? `${file.parent.path}/${incrementedTitle}.md` : `${incrementedTitle}.md`;
+
+
+        while (this.app.vault.getFiles().some(file => file.basename === incrementedTitle)) {
+            if (file.path === newPath) return;
+
+            counter++;
+            incrementedTitle = `${cleanTitle}${this.settings.spaceSubstitute}${counter}`;
+            newPath = file.parent && file.parent.path !== '/' ? `${file.parent.path}/${incrementedTitle}.md` : `${incrementedTitle}.md`;
+        }
+
+        if (counter > 0)
+        {
+            cleanTitle = incrementedTitle;
+
+            if (verbose)
+            {
+                const message = `${this.manifest.name} : New filename already exists for ${file}. Renamed to ${cleanTitle}.`;
+                new Notice(message);
+                console.log(message);
+            }
+        }
+
+        try {
+            await this.app.fileManager.renameFile(
+                file,
+                newPath
+            );
+        } catch (e) {
+            const message = `${this.manifest.name} : Something went wrong when renaming ${file} to ${cleanTitle}: ${e}.`;
+            new Notice(message);
+            console.log(message);
+        }
+    }
+
+    async renameAllFiles() {
+        const files = this.app.vault.getMarkdownFiles();
+
+        for (const file of files) {
+            if (this.isIgnored(file)) continue;
+
+            await this.renameFromH1(file, true);
+
+            await new Promise(r => setTimeout(r, 10)); // évite freeze UI
+        }
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+        this.createDebounce(); // 🔁 appliquer nouveau délai
+    }
 }
